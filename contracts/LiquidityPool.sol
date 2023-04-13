@@ -11,6 +11,8 @@ import "./utils/Allowlistable.sol";
 import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import "@openzeppelin/contracts-upgradeable/token/ERC20/extensions/ERC20PausableUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/security/ReentrancyGuardUpgradeable.sol";
+import "@openzeppelin/contracts/utils/Counters.sol";
+import "@openzeppelin/contracts/utils/math/SafeCast.sol";
 
 pragma solidity ^0.8.17;
 
@@ -22,8 +24,19 @@ contract LiquidityPool is
   Allowlistable
 {
   using FixedPoint for uint256;
+  using SafeCast for uint256;
   using ERC20Fixed for ERC20PausableUpgradeable;
   using ERC20Fixed for ERC20;
+  using Counters for Counters.Counter;
+
+  struct BurnRequest {
+    address requestor;
+    uint64 requestBlock;
+    uint64 burnBlock;
+    uint64 expiryBlock;
+    uint256 amount;
+    uint256 salt;
+  }
 
   ISwapRouter public swapRouter; //settable
 
@@ -38,12 +51,40 @@ contract LiquidityPool is
 
   mapping(address => bool) public approvedToken;
 
+  bool public burnRequestOn;
+  uint16 public graceBlocks;
+  uint16 public requestExpireBlocks;
+  Counters.Counter internal _burnRequestCounter;
+  mapping(bytes32 => BurnRequest) internal _burnRequests;
+
   event SetSwapRouterEvent(ISwapRouter swapRouter);
   event CollectAccruedFeeEvent(uint256 accruedFee);
   event SetMintFeeEvent(uint256 mintFee);
   event SetBurnFeeEvent(uint256 burnFee);
   event SetTransferrableEvent(bool transferrable);
   event SetApprovedTokenEvent(address token, bool approved);
+  event MintEvent(
+    address sender,
+    address receiver,
+    uint256 baseAmountIn,
+    uint256 mintBalance,
+    uint256 poolBaseBalance
+  );
+  event BurnEvent(
+    address sender,
+    uint256 burnAmountIn,
+    uint256 returnBaseBalance,
+    uint256 poolBaseBalance
+  );
+  event SetGraceBlocksEvent(uint16 graceBlocks);
+  event SetRequestExpiryBlocksEvent(uint16 requestExpiryBlocks);
+  event BurnRequestEvent(
+    address requester,
+    address holder,
+    bytes32 requestHash,
+    BurnRequest request
+  );
+  event SetBurnRequestOn(bool burnRequestOn);
 
   function initialize(
     address _owner,
@@ -56,7 +97,7 @@ contract LiquidityPool is
     __ERC20_init(_name, _symbol);
     __ERC20Pausable_init();
     __AbstractPool_init(_owner, _baseToken, _registry);
-    __AbstractERC20StakeableM_init();
+    __AbstractERC20Stakeable_init();
     __ReentrancyGuard_init();
 
     swapRouter = _swapRouter;
@@ -64,6 +105,7 @@ contract LiquidityPool is
     burnFee = 0;
     accruedFee = 0;
     transferrable = true;
+    burnRequestOn = false;
   }
 
   /// @custom:oz-upgrades-unsafe-allow constructor
@@ -77,6 +119,23 @@ contract LiquidityPool is
   }
 
   // governance functions
+
+  function setBurnRequestOn(bool _burnRequestOn) external onlyOwner {
+    burnRequestOn = _burnRequestOn;
+    emit SetBurnRequestOn(burnRequestOn);
+  }
+
+  function setGraceBlocks(uint16 _graceBlocks) external onlyOwner {
+    graceBlocks = _graceBlocks;
+    emit SetGraceBlocksEvent(graceBlocks);
+  }
+
+  function setRequestExpiryBlocks(
+    uint16 _requestExpiryBlocks
+  ) external onlyOwner {
+    requestExpireBlocks = _requestExpiryBlocks;
+    emit SetRequestExpiryBlocksEvent(requestExpireBlocks);
+  }
 
   function onAllowlist() external onlyOwner {
     _onAllowlist();
@@ -183,7 +242,22 @@ contract LiquidityPool is
     whenStakingNotPaused
     onlyAllowlisted
   {
-    _stake(msg.sender, msg.sender, amount);
+    _stake(msg.sender, amount);
+  }
+
+  function stake(
+    address _user,
+    uint256 amount
+  )
+    external
+    override
+    whenNotPaused
+    nonReentrant
+    whenStakingNotPaused
+    onlyAllowlisted
+  {
+    _require(tx.origin == _user, Errors.APPROVED_ONLY);
+    _stake(_user, amount);
   }
 
   function unstake(
@@ -210,10 +284,37 @@ contract LiquidityPool is
     _claim(msg.sender);
   }
 
+  function claim(
+    address _user
+  )
+    external
+    override
+    whenNotPaused
+    nonReentrant
+    whenStakingNotPaused
+    onlyAllowlisted
+  {
+    _claim(_user);
+  }
+
+  function claim(
+    address _user,
+    address _rewardToken
+  )
+    external
+    override
+    whenNotPaused
+    nonReentrant
+    whenStakingNotPaused
+    onlyAllowlisted
+  {
+    _claim(_user, _rewardToken);
+  }
+
   function mint(
     uint256 amountIn
   ) external whenNotPaused nonReentrant onlyAllowlisted {
-    _mintFrom(msg.sender, msg.sender, amountIn, 0, address(baseToken), 0);
+    _mint(msg.sender, amountIn, 0, address(baseToken), 0);
   }
 
   function mint(
@@ -222,28 +323,21 @@ contract LiquidityPool is
     address tokenIn,
     uint24 poolFee
   ) external whenNotPaused nonReentrant onlyAllowlisted {
-    _mintFrom(
-      msg.sender,
-      msg.sender,
-      amountIn,
-      amountOutMinimum,
-      tokenIn,
-      poolFee
-    );
+    _mint(msg.sender, amountIn, amountOutMinimum, tokenIn, poolFee);
   }
 
   function mintAndStake(
     uint256 amountIn
   ) external whenNotPaused nonReentrant whenStakingNotPaused onlyAllowlisted {
-    uint256 minted = _mintFrom(
-      msg.sender,
-      address(this),
-      amountIn,
-      0,
-      address(baseToken),
-      0
-    );
-    _stake(address(this), msg.sender, minted);
+    _mintAndStake(msg.sender, amountIn, 0, address(baseToken), 0);
+  }
+
+  function mintAndStake(
+    address sender,
+    uint256 amountIn
+  ) external whenNotPaused nonReentrant whenStakingNotPaused onlyAllowlisted {
+    _require(tx.origin == sender, Errors.APPROVED_ONLY);
+    _mintAndStake(sender, amountIn, 0, address(baseToken), 0);
   }
 
   function mintAndStake(
@@ -252,20 +346,45 @@ contract LiquidityPool is
     address tokenIn,
     uint24 poolFee
   ) external whenNotPaused nonReentrant whenStakingNotPaused onlyAllowlisted {
-    uint256 minted = _mintFrom(
+    _mintAndStake(msg.sender, amountIn, amountOutMinimum, tokenIn, poolFee);
+  }
+
+  function mintAndStake(
+    address sender,
+    uint256 amountIn,
+    uint256 amountOutMinimum,
+    address tokenIn,
+    uint24 poolFee
+  ) external whenNotPaused nonReentrant whenStakingNotPaused onlyAllowlisted {
+    _require(tx.origin == sender, Errors.APPROVED_ONLY);
+    _mintAndStake(sender, amountIn, amountOutMinimum, tokenIn, poolFee);
+  }
+
+  function burnRequest(
+    uint256 _amount
+  ) external whenNotPaused nonReentrant onlyAllowlisted {
+    uint256 burnStart = block.number.add(graceBlocks);
+    uint256 burnExpiry = burnStart.add(requestExpireBlocks);
+    uint256 salt = _burnRequestCounter.current();
+    _burnRequestCounter.increment();
+    BurnRequest memory request = BurnRequest(
       msg.sender,
-      address(this),
-      amountIn,
-      amountOutMinimum,
-      tokenIn,
-      poolFee
+      (block.number).toUint64(),
+      burnStart.toUint64(),
+      burnExpiry.toUint64(),
+      _amount,
+      salt
     );
-    _stake(address(this), msg.sender, minted);
+
+    bytes32 requestHash = keccak256(abi.encode(request));
+    _burnRequests[requestHash] = request;
+    emit BurnRequestEvent(msg.sender, msg.sender, requestHash, request);
   }
 
   function burn(
     uint256 _amount
   ) external whenNotPaused nonReentrant onlyAllowlisted {
+    _require(!burnRequestOn, Errors.REQUIRE_BURN_REQUEST);
     _burn(_amount, 0, address(baseToken), 0);
   }
 
@@ -275,12 +394,39 @@ contract LiquidityPool is
     address tokenOut,
     uint24 poolFee
   ) external whenNotPaused nonReentrant onlyAllowlisted {
+    _require(!burnRequestOn, Errors.REQUIRE_BURN_REQUEST);
     _burn(_amount, amountOutMinimum, tokenOut, poolFee);
+  }
+
+  function burn(
+    bytes32 requestHash,
+    uint256 _amount
+  ) external whenNotPaused nonReentrant onlyAllowlisted {
+    _require(
+      msg.sender == _burnRequests[requestHash].requestor,
+      Errors.APPROVED_ONLY
+    );
+    _burn(requestHash, _amount, 0, address(baseToken), 0);
+  }
+
+  function burn(
+    bytes32 requestHash,
+    uint256 _amount,
+    uint256 amountOutMinimum,
+    address tokenOut,
+    uint24 poolFee
+  ) external whenNotPaused nonReentrant onlyAllowlisted {
+    _require(
+      msg.sender == _burnRequests[requestHash].requestor,
+      Errors.APPROVED_ONLY
+    );
+    _burn(requestHash, _amount, amountOutMinimum, tokenOut, poolFee);
   }
 
   function unstakeAndBurn(
     uint256 amountIn
   ) external whenNotPaused nonReentrant whenStakingNotPaused onlyAllowlisted {
+    _require(!burnRequestOn, Errors.REQUIRE_BURN_REQUEST);
     _require(
       amountIn <= _stakedByStaker[msg.sender],
       Errors.INVALID_BURN_AMOUNT
@@ -295,6 +441,7 @@ contract LiquidityPool is
     address tokenOut,
     uint24 poolFee
   ) external whenNotPaused nonReentrant whenStakingNotPaused onlyAllowlisted {
+    _require(!burnRequestOn, Errors.REQUIRE_BURN_REQUEST);
     _require(
       amountIn <= _stakedByStaker[msg.sender],
       Errors.INVALID_BURN_AMOUNT
@@ -303,15 +450,72 @@ contract LiquidityPool is
     _burn(amountIn, amountOutMinimum, tokenOut, poolFee);
   }
 
+  function unstakeAndBurn(
+    bytes32 requestHash,
+    uint256 amountIn
+  ) external whenNotPaused nonReentrant whenStakingNotPaused onlyAllowlisted {
+    _require(
+      amountIn <= _stakedByStaker[msg.sender],
+      Errors.INVALID_BURN_AMOUNT
+    );
+    _require(
+      msg.sender == _burnRequests[requestHash].requestor,
+      Errors.APPROVED_ONLY
+    );
+    _unstake(msg.sender, amountIn);
+    _burn(requestHash, amountIn, 0, address(baseToken), 0);
+  }
+
+  function unstakeAndBurn(
+    bytes32 requestHash,
+    uint256 amountIn,
+    uint256 amountOutMinimum,
+    address tokenOut,
+    uint24 poolFee
+  ) external whenNotPaused nonReentrant whenStakingNotPaused onlyAllowlisted {
+    _require(
+      amountIn <= _stakedByStaker[msg.sender],
+      Errors.INVALID_BURN_AMOUNT
+    );
+    _require(
+      msg.sender == _burnRequests[requestHash].requestor,
+      Errors.APPROVED_ONLY
+    );
+    _unstake(msg.sender, amountIn);
+    _burn(requestHash, amountIn, amountOutMinimum, tokenOut, poolFee);
+  }
+
   function getBaseBalance() external view returns (uint256) {
     return _getBaseBalance();
   }
 
+  function getBurnRequest(
+    bytes32 requestHash
+  ) external view returns (BurnRequest memory) {
+    return _burnRequests[requestHash];
+  }
+
   // internal functions
 
-  function _mintFrom(
+  function _mintAndStake(
     address sender,
-    address receiver,
+    uint256 amountIn,
+    uint256 amountOutMinimum,
+    address tokenIn,
+    uint24 poolFee
+  ) internal {
+    uint256 minted = _mint(
+      sender,
+      amountIn,
+      amountOutMinimum,
+      tokenIn,
+      poolFee
+    );
+    _stake(sender, minted);
+  }
+
+  function _mint(
+    address user,
     uint256 amountIn,
     uint256 amountOutMinimum,
     address tokenIn,
@@ -322,10 +526,10 @@ contract LiquidityPool is
     uint256 amountGross = amountIn;
 
     if (tokenIn == address(baseToken)) {
-      baseToken.transferFromFixed(sender, address(this), amountGross);
+      baseToken.transferFromFixed(user, address(this), amountGross);
     } else {
       _require(approvedToken[tokenIn], Errors.APPROVED_TOKEN_ONLY);
-      ERC20(tokenIn).transferFromFixed(sender, address(this), amountIn);
+      ERC20(tokenIn).transferFromFixed(user, address(this), amountIn);
       // audit(B): H02
       uint256 _amountIn = amountIn.min(
         ERC20(tokenIn).balanceOfFixed(address(this))
@@ -352,7 +556,9 @@ contract LiquidityPool is
     // audit(B): H01
     _require(returnBalance != 0, Errors.INVALID_MINT_AMOUNT);
 
-    _mint(receiver, returnBalance);
+    _mint(user, returnBalance);
+
+    emit MintEvent(user, user, amountGross, returnBalance, _getBaseBalance());
 
     return returnBalance;
   }
@@ -363,12 +569,12 @@ contract LiquidityPool is
     address tokenOut,
     uint24 poolFee
   ) internal {
+    uint256 thisBalance = ERC20PausableUpgradeable(this).totalSupplyFixed();
+
     _require(
       amountIn <= ERC20PausableUpgradeable(this).balanceOfFixed(msg.sender),
       Errors.INVALID_BURN_AMOUNT
     );
-
-    uint256 thisBalance = ERC20PausableUpgradeable(this).totalSupplyFixed();
     _require(thisBalance > 0, Errors.NOTHING_TO_BURN);
 
     uint256 baseBalance = _getBaseBalance();
@@ -405,6 +611,30 @@ contract LiquidityPool is
         )
       );
     }
+
+    emit BurnEvent(msg.sender, amountIn, returnBalanceNet, _getBaseBalance());
+  }
+
+  function _burn(
+    bytes32 requestHash,
+    uint256 amountIn,
+    uint256 amountOutMinimum,
+    address tokenOut,
+    uint24 poolFee
+  ) internal {
+    BurnRequest memory request = _burnRequests[requestHash];
+
+    _require(
+      block.number >= request.burnBlock &&
+        block.number <= request.expiryBlock &&
+        amountIn <= request.amount,
+      Errors.APPROVED_ONLY
+    );
+
+    request.amount = request.amount.sub(amountIn);
+    _burnRequests[requestHash] = request;
+
+    _burn(amountIn, amountOutMinimum, tokenOut, poolFee);
   }
 
   function _transfer(

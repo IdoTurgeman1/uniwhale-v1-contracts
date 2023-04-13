@@ -8,45 +8,54 @@ import "./math/FixedPoint.sol";
 import "./Errors.sol";
 import "./ERC20Fixed.sol";
 import "@openzeppelin/contracts/utils/math/SafeCast.sol";
+import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 
-library TradingCoreLib {
+contract TradingCoreLib is Initializable {
   using FixedPoint for uint256;
   using FixedPoint for int256;
   using SafeCast for uint256;
   using SafeCast for int256;
   using ERC20Fixed for ERC20;
 
+  function initialize() public initializer {}
+
+  /// @custom:oz-upgrades-unsafe-allow constructor
+  constructor() {
+    _disableInitializers();
+  }
+
   function canOpenMarketOrder(
-    ITradingCore tradingCore,
     IRegistryCore registryCore,
     ITradingCore.OpenTradeInput memory openData,
-    uint128 openPrice
+    uint128 openPrice,
+    uint256 liquidityBalance
   ) public view returns (IRegistry.Trade memory trade, IFee.Fee memory _fee) {
-    _fee = registryCore.getFee(openData.user);
+    _fee = registryCore.getOpenFee(openData.user);
     _fee.fee = uint256(openData.leverage)
       .mulDown(openData.margin)
       .mulDown(_fee.fee)
       .toUint128();
     _require(_fee.fee < openData.margin, Errors.FEE_TOO_HIGH);
+    uint256 openPosition = uint256(openData.leverage).mulDown(openData.margin);
     openData.margin -= _fee.fee;
 
-    _fee.referralFee = uint256(openData.leverage)
-      .mulDown(openData.margin)
-      .mulDown(_fee.referralFee)
-      .toUint128();
+    _fee.referredFee = openPosition.mulDown(_fee.referredFee).toUint128();
+
+    _fee.referralFee = openPosition.mulDown(_fee.referralFee).toUint128();
 
     uint256 slippage = registryCore.getSlippage(
       openData.priceId,
       openData.isBuy,
       openPrice,
-      uint256(openData.leverage).mulDown(openData.margin).toUint128()
+      openPosition.toUint128()
     );
     trade = createTrade(
-      tradingCore,
       registryCore,
       openData,
       openPrice,
-      slippage.toUint128()
+      slippage.toUint128(),
+      _fee.fee,
+      liquidityBalance
     );
   }
 
@@ -67,13 +76,13 @@ library TradingCoreLib {
   }
 
   function createTrade(
-    ITradingCore tradingCore,
     IRegistryCore registryCore,
     ITradingCore.OpenTradeInput memory openData,
     uint128 openPrice,
-    uint128 slippage
+    uint128 slippage,
+    uint128 fee,
+    uint256 liquidityBalance
   ) public view returns (IRegistry.Trade memory trade) {
-    uint256 position = uint256(openData.leverage).mulDown(openData.margin);
     uint256 executionPrice = openData.isBuy
       ? uint256(openPrice).add(slippage)
       : uint256(openPrice).sub(slippage);
@@ -121,14 +130,22 @@ library TradingCoreLib {
     _require(
       uint256(registryCore.minCollateral()).add(
         uint256(openData.margin).mulDown(maxPercentagePnL)
-      ) <=
-        tradingCore.baseToken().balanceOfFixed(
-          address(tradingCore.liquidityPool())
-        ),
+      ) <= liquidityBalance,
       Errors.MAX_LIQUIDITY_POOL
     );
     _require(
-      position >= registryCore.minPositionPerTrade(),
+      openData.isBuy
+        ? uint256(registryCore.totalLongPerPriceId(openData.priceId)).add(
+          uint256(openData.leverage).mulDown(uint256(openData.margin))
+        ) <= registryCore.maxTotalLongPerPriceId(openData.priceId)
+        : uint256(registryCore.totalShortPerPriceId(openData.priceId)).add(
+          uint256(openData.leverage).mulDown(uint256(openData.margin))
+        ) <= registryCore.maxTotalShortPerPriceId(openData.priceId),
+      Errors.MAX_TOTAL_POSITIONS
+    );
+    _require(
+      uint256(openData.leverage).mulDown(uint256(openData.margin).add(fee)) >=
+        registryCore.minPositionPerTrade(),
       Errors.POSITION_TOO_SMALL
     );
     _require(
@@ -207,6 +224,7 @@ library TradingCoreLib {
     onCloseTrade.closeNet = trade.isBuy
       ? uint256(closePrice)
         .sub(accumulatedFee.mulDown(openNet).divDown(closePosition))
+        .max(uint256(0))
         .toUint256()
         .toUint128()
       : uint256(closePrice)
@@ -296,27 +314,39 @@ library TradingCoreLib {
       ITradingCore.AfterCloseTrade memory afterCloseTrade
     )
   {
-    uint256 closeMargin = uint256(trade.margin).mulDown(closePercent);
+    uint256 closePosition = uint256(trade.leverage)
+      .mulDown(trade.margin)
+      .mulDown(closePercent);
     onCloseTrade = _onCloseTrade;
 
-    afterCloseTrade.fees = registryCore.getFee(trade.user);
-    afterCloseTrade.fees.fee = uint256(trade.leverage)
-      .mulDown(closeMargin)
+    afterCloseTrade.fees = registryCore.getCloseFee(trade.user);
+    afterCloseTrade.fees.fee = closePosition
       .mulDown(afterCloseTrade.fees.fee)
       .toUint128();
+
+    uint256 pnlOverFee = 1e18;
+    if (afterCloseTrade.fees.fee > 0) {
+      pnlOverFee = uint256(onCloseTrade.grossPnL)
+        .divDown(afterCloseTrade.fees.fee)
+        .min(uint256(1e18));
+    }
+
     afterCloseTrade.fees.fee = uint256(afterCloseTrade.fees.fee)
-      .min(onCloseTrade.grossPnL)
+      .mulDown(pnlOverFee)
       .toUint128();
+
     onCloseTrade.grossPnL = uint256(onCloseTrade.grossPnL)
       .sub(afterCloseTrade.fees.fee)
       .toUint128();
 
-    afterCloseTrade.fees.referralFee = uint256(trade.leverage)
-      .mulDown(closeMargin)
-      .mulDown(afterCloseTrade.fees.referralFee)
+    afterCloseTrade.fees.referredFee = closePosition
+      .mulDown(afterCloseTrade.fees.referredFee)
+      .mulDown(pnlOverFee)
       .toUint128();
-    afterCloseTrade.fees.referralFee = uint256(afterCloseTrade.fees.referralFee)
-      .min(afterCloseTrade.fees.fee)
+
+    afterCloseTrade.fees.referralFee = closePosition
+      .mulDown(afterCloseTrade.fees.referralFee)
+      .mulDown(pnlOverFee)
       .toUint128();
 
     if (isLiquidator) {

@@ -5,8 +5,10 @@ pragma solidity ^0.8.17;
 import "./math/FixedPoint.sol";
 import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import "@openzeppelin/contracts/token/ERC20/extensions/ERC20Burnable.sol";
 import "@openzeppelin/contracts-upgradeable/token/ERC20/ERC20Upgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/token/ERC20/utils/SafeERC20Upgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/token/ERC20/extensions/ERC20BurnableUpgradeable.sol";
 
 library ERC20Fixed {
   using FixedPoint for uint256;
@@ -15,7 +17,8 @@ library ERC20Fixed {
   using SafeERC20Upgradeable for ERC20Upgradeable;
 
   function transferFixed(ERC20 _token, address _to, uint256 _amount) internal {
-    _token.safeTransfer(_to, _amount / (10 ** (18 - _token.decimals())));
+    if (_amount > 0)
+      _token.safeTransfer(_to, _amount / (10 ** (18 - _token.decimals())));
   }
 
   function transferFromFixed(
@@ -24,11 +27,12 @@ library ERC20Fixed {
     address _to,
     uint256 _amount
   ) internal {
-    _token.safeTransferFrom(
-      _from,
-      _to,
-      _amount / (10 ** (18 - _token.decimals()))
-    );
+    if (_amount > 0)
+      _token.safeTransferFrom(
+        _from,
+        _to,
+        _amount / (10 ** (18 - _token.decimals()))
+      );
   }
 
   function balanceOfFixed(
@@ -89,7 +93,8 @@ library ERC20Fixed {
     address _to,
     uint256 _amount
   ) internal {
-    _token.safeTransfer(_to, _amount / (10 ** (18 - _token.decimals())));
+    if (_amount > 0)
+      _token.safeTransfer(_to, _amount / (10 ** (18 - _token.decimals())));
   }
 
   function transferFromFixed(
@@ -98,11 +103,12 @@ library ERC20Fixed {
     address _to,
     uint256 _amount
   ) internal {
-    _token.safeTransferFrom(
-      _from,
-      _to,
-      _amount / (10 ** (18 - _token.decimals()))
-    );
+    if (_amount > 0)
+      _token.safeTransferFrom(
+        _from,
+        _to,
+        _amount / (10 ** (18 - _token.decimals()))
+      );
   }
 
   function balanceOfFixed(
@@ -158,5 +164,32 @@ library ERC20Fixed {
       _subtractedValue / (10 ** (18 - _token.decimals()))
     );
     return true;
+  }
+
+  function burnFixed(ERC20Burnable _token, uint256 _amount) internal {
+    _token.burn(_amount / (10 ** (18 - _token.decimals())));
+  }
+
+  function burnFromFixed(
+    ERC20Burnable _token,
+    address _from,
+    uint256 _amount
+  ) internal {
+    _token.burnFrom(_from, _amount / (10 ** (18 - _token.decimals())));
+  }
+
+  function burnFixed(
+    ERC20BurnableUpgradeable _token,
+    uint256 _amount
+  ) internal {
+    _token.burn(_amount / (10 ** (18 - _token.decimals())));
+  }
+
+  function burnFromFixed(
+    ERC20BurnableUpgradeable _token,
+    address _from,
+    uint256 _amount
+  ) internal {
+    _token.burnFrom(_from, _amount / (10 ** (18 - _token.decimals())));
   }
 }

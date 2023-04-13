@@ -10,4 +10,6 @@ interface IPool {
     address _to,
     uint256 _amount
   ) external;
+
+  function getBaseBalance() external view returns (uint256);
 }

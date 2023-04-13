@@ -39,4 +39,8 @@ contract MarginPool is AbstractPool {
     _require(_token == address(baseToken), Errors.TOKEN_MISMATCH);
     baseToken.transferFixed(_to, _amount);
   }
+
+  function getBaseBalance() external view returns (uint256) {
+    return baseToken.balanceOfFixed(address(this));
+  }
 }

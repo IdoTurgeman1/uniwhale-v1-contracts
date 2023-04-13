@@ -22,9 +22,14 @@ contract RegistryCore is AbstractRegistry, IRegistryCore {
   mapping(bytes32 => int128) internal _fundingFeeBaseByOrderHash;
   mapping(bytes32 => AccruedFee) internal _accruedFeeByOrderHash;
 
+  mapping(bytes32 => uint128) public maxTotalLongPerPriceId;
+  mapping(bytes32 => uint128) public maxTotalShortPerPriceId;
+
   event SetFeesEvent(address fees);
   event SetFundingFeeEvent(bytes32 priceId, uint256 fundingFee);
   event SetRolloverFeeEvent(bytes32 priceId, uint256 rolloverFee);
+  event SetMaxTotalLongPerPriceId(bytes32 priceId, uint256 _maxLong);
+  event SetMaxTotalShortPerPriceId(bytes32 priceId, uint256 _maxShort);
 
   function initialize(
     address _owner,
@@ -59,13 +64,19 @@ contract RegistryCore is AbstractRegistry, IRegistryCore {
   // external functions
 
   function getFee() external view override returns (uint256) {
-    return fees.getFee(msg.sender).fee;
+    _revert(Errors.UNIMPLEMENTED);
   }
 
-  function getFee(
+  function getOpenFee(
     address _user
   ) external view override returns (IFee.Fee memory) {
-    return fees.getFee(_user);
+    return fees.getOpenFee(_user);
+  }
+
+  function getCloseFee(
+    address _user
+  ) external view override returns (IFee.Fee memory) {
+    return fees.getCloseFee(_user);
   }
 
   function getAccumulatedFee(
@@ -142,6 +153,22 @@ contract RegistryCore is AbstractRegistry, IRegistryCore {
 
   // governance functions
 
+  function setMaxTotalLongPerPriceId(
+    bytes32 priceId,
+    uint128 _maxLong
+  ) external onlyOwner {
+    maxTotalLongPerPriceId[priceId] = _maxLong;
+    emit SetMaxTotalLongPerPriceId(priceId, _maxLong);
+  }
+
+  function setMaxTotalShortPerPriceId(
+    bytes32 priceId,
+    uint128 _maxShort
+  ) external onlyOwner {
+    maxTotalShortPerPriceId[priceId] = _maxShort;
+    emit SetMaxTotalShortPerPriceId(priceId, _maxShort);
+  }
+
   function setFees(IFee _fees) external onlyOwner {
     fees = _fees;
     emit SetFeesEvent(address(fees));
@@ -189,15 +216,15 @@ contract RegistryCore is AbstractRegistry, IRegistryCore {
       orderHash,
       trade.priceId,
       trade.isBuy,
-      0,
-      0,
+      uint128(0),
+      uint128(0),
       trade.leverage,
       trade.margin
     );
 
     // audit(B): L05
     minCollateral += uint256(trade.margin)
-      .mulUp(trade.maxPercentagePnL)
+      .mulDown(trade.maxPercentagePnL)
       .toUint128();
 
     __openTradeByOrderHash[orderHash] = trade;
@@ -270,7 +297,7 @@ contract RegistryCore is AbstractRegistry, IRegistryCore {
     minCollateral -= uint256(t.margin).mulDown(t.maxPercentagePnL).toUint128();
     // audit(B): M02, L05
     minCollateral += uint256(trade.margin)
-      .mulUp(trade.maxPercentagePnL)
+      .mulDown(trade.maxPercentagePnL)
       .toUint128();
 
     __openTradeByOrderHash[orderHash] = trade;

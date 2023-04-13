@@ -23,7 +23,9 @@ interface IRegistryCore is IRegistry {
     IRegistryCore.AccruedFee accruedFee;
   }
 
-  function getFee(address _user) external view returns (IFee.Fee memory);
+  function getOpenFee(address _user) external view returns (IFee.Fee memory);
+
+  function getCloseFee(address _user) external view returns (IFee.Fee memory);
 
   function getAccumulatedFee(
     bytes32 orderHash,
@@ -47,4 +49,12 @@ interface IRegistryCore is IRegistry {
     uint128 profitTarget,
     uint128 stopLoss
   ) external view returns (Trade memory);
+
+  function maxTotalLongPerPriceId(
+    bytes32 priceId
+  ) external view returns (uint128);
+
+  function maxTotalShortPerPriceId(
+    bytes32 priceId
+  ) external view returns (uint128);
 }

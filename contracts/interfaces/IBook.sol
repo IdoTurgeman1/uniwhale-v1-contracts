@@ -19,6 +19,4 @@ interface IBook {
     uint128 limitPrice;
     uint64 closePercent;
   }
-
-  event PausedEvent(bool paused);
 }

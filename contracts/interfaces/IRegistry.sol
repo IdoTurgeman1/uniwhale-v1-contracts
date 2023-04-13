@@ -79,4 +79,10 @@ interface IRegistry {
   ) external view returns (uint128);
 
   function openTradesPerUserCount(address user) external view returns (uint128);
+
+  function totalLongPerPriceId(bytes32 priceId) external view returns (uint128);
+
+  function totalShortPerPriceId(
+    bytes32 priceId
+  ) external view returns (uint128);
 }

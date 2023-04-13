@@ -179,6 +179,7 @@ library Errors {
   uint256 internal constant INVALID_FEE_FACTOR = 134;
   uint256 internal constant INVALID_MINT_AMOUNT = 135;
   uint256 internal constant TRADE_SALT_MISMATCH = 136;
+  uint256 internal constant REQUIRE_BURN_REQUEST = 137;
 
   // Access
   uint256 internal constant APPROVED_ONLY = 200;
@@ -195,6 +196,7 @@ library Errors {
   uint256 internal constant MAX_OPEN_TRADES_PER_USER = 301;
   uint256 internal constant MAX_MARGIN_PER_USER = 302;
   uint256 internal constant MAX_LIQUIDITY_POOL = 303;
+  uint256 internal constant MAX_TOTAL_POSITIONS = 304;
 
   // Pyth related
   uint256 internal constant INVALID_UPDATE_DATA_SOURCE = 400;
@@ -212,6 +214,7 @@ library Errors {
   // NFT related
   uint256 internal constant ALREADY_MINTED = 600;
   uint256 internal constant MAX_MINTED = 601;
+  uint256 internal constant INVALID_DISCOUNT = 602;
 
   // Staking related
   uint256 internal constant INVALID_AMOUNT = 700;
@@ -220,7 +223,11 @@ library Errors {
   uint256 internal constant INVALID_REWARD_TOKEN = 703;
   uint256 internal constant ALREADY_STAKED = 704;
 
+  // Airdrop related
+  uint256 internal constant START_BLOCK_NOT_REACHED = 800;
+
   // Misc
+  uint256 internal constant CALL_FAILED = 997;
   uint256 internal constant UNIMPLEMENTED = 998;
   uint256 internal constant SHOULD_NOT_HAPPEN = 999;
 }

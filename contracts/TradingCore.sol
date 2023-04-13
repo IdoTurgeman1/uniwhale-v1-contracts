@@ -2,6 +2,7 @@
 
 pragma solidity ^0.8.17;
 
+import "./TraderFarm.sol";
 import "./interfaces/IRegistryCore.sol";
 import "./interfaces/IPool.sol";
 import "./interfaces/ITradingCore.sol";
@@ -42,8 +43,13 @@ contract TradingCore is
   ERC20 public baseToken;
 
   AbstractOracleAggregator public oracleAggregator; //settable
+  TradingCoreLib public tradingCoreLib;
+
+  TraderFarm public traderFarm;
 
   event SetOracleAggregatorEvent(AbstractOracleAggregator oracleAggregator);
+  event SetTradingCoreLibEvent(TradingCoreLib tradingCoreLib);
+  event SetTraderFarmEvent(TraderFarm traderFarm);
 
   function initialize(
     address _owner,
@@ -83,6 +89,18 @@ contract TradingCore is
   }
 
   // governance functions
+
+  function setTraderFarm(TraderFarm _traderFarm) external onlyOwner {
+    traderFarm = _traderFarm;
+    emit SetTraderFarmEvent(traderFarm);
+  }
+
+  function setTradingCoreLib(
+    TradingCoreLib _tradingCoreLib
+  ) external onlyOwner {
+    tradingCoreLib = _tradingCoreLib;
+    emit SetTradingCoreLibEvent(tradingCoreLib);
+  }
 
   function onAllowlist() external onlyOwner {
     _onAllowlist();
@@ -333,8 +351,13 @@ contract TradingCore is
     OpenTradeInput memory openData,
     uint128 openPrice
   ) internal {
-    (IRegistry.Trade memory trade, IFee.Fee memory _fee) = TradingCoreLib
-      .canOpenMarketOrder(this, registry, openData, openPrice);
+    (IRegistry.Trade memory trade, IFee.Fee memory _fee) = tradingCoreLib
+      .canOpenMarketOrder(
+        registry,
+        openData,
+        openPrice,
+        liquidityPool.getBaseBalance()
+      );
 
     bytes32 orderHash = registry.openMarketOrder(trade);
 
@@ -347,6 +370,8 @@ contract TradingCore is
 
     baseToken.approveFixed(address(revenuePool), netFeeRebate);
     revenuePool.transferIn(netFeeRebate);
+
+    traderFarm.stake(trade.user, uint256(trade.margin).mulDown(trade.leverage));
 
     if (_fee.referrer != address(0)) {
       baseToken.transferFromFixed(msg.sender, _fee.referrer, _fee.referralFee);
@@ -377,7 +402,7 @@ contract TradingCore is
       closeData.orderHash
     );
 
-    OnCloseTrade memory onCloseTrade = TradingCoreLib.closeTrade(
+    OnCloseTrade memory onCloseTrade = tradingCoreLib.closeTrade(
       registry,
       closeData.orderHash,
       trade,
@@ -402,7 +427,7 @@ contract TradingCore is
     );
 
     AfterCloseTrade memory afterCloseTrade;
-    (onCloseTrade, afterCloseTrade) = TradingCoreLib.onAfterCloseTrade(
+    (onCloseTrade, afterCloseTrade) = tradingCoreLib.onAfterCloseTrade(
       registry,
       trade,
       closeData.closePercent,
@@ -443,6 +468,13 @@ contract TradingCore is
     } else {
       liquidityPool.transferBase(msg.sender, afterCloseTrade.settled);
     }
+
+    traderFarm.stake(
+      trade.user,
+      uint256(trade.margin).mulDown(closeData.closePercent).mulDown(
+        trade.leverage
+      )
+    );
 
     emit CloseMarketOrderEvent(
       tx.origin,
